@@ -1,0 +1,323 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,user-scalable=no">
+<meta name="theme-color" content="#102b25">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<title>Macawbre — Canopy Run Candidate</title>
+<style>
+html,body{margin:0;width:100%;height:100%;overflow:hidden;background:#071a17;font-family:Georgia,serif}
+canvas{display:block;width:100%;height:100%;touch-action:none}
+</style>
+</head>
+<body>
+<canvas id="game"></canvas>
+<script>
+(()=>{
+const cv=document.querySelector('#game'),ctx=cv.getContext('2d');
+const P={gravity:510,flap:205,maxFall:240,maxRise:-215,speed:195};
+let W=0,H=0,D=1,last=0,world=0,dead=false,complete=false,victory=0,feathers=0,runTime=0,runPortrait=null,started=false;
+const bird={y:0,vy:0,beat:0};
+const featherTaken=new Set();
+const clamp=(v,a,b)=>Math.max(a,Math.min(b,v));
+const smooth=t=>t*t*(3-2*t);
+
+function resize(){
+ D=Math.min(devicePixelRatio||1,2); W=innerWidth; H=innerHeight;
+ cv.width=Math.round(W*D); cv.height=Math.round(H*D);
+ ctx.setTransform(D,0,0,D,0,0);
+ if(!bird.y) bird.y=H*.48;
+}
+addEventListener('resize',resize); resize(); runPortrait=(W<H);
+
+function isPortrait(){return runPortrait===null ? W<H : runPortrait}
+function heroX(){return W*(isPortrait()?.21:.24)}
+function reset(){
+ world=0;dead=false;complete=false;victory=0;feathers=0;runTime=0;runPortrait=(W<H);started=false;featherTaken.clear();
+ bird.y=H*.48;bird.vy=0;bird.beat=0;
+}
+function flap(){
+ if(dead||complete){reset();return}
+ if(!started){started=true;runPortrait=(W<H)}
+ const climb=Math.max(0,-bird.vy);
+ const authority=Math.max(.42,1-climb/300);
+ bird.vy=Math.max(P.maxRise,bird.vy-P.flap*authority);
+ bird.beat=1;
+}
+addEventListener('pointerdown',e=>{e.preventDefault();flap()},{passive:false});
+
+function poly(points,fill,stroke=null,lw=1){
+ ctx.beginPath();ctx.moveTo(points[0][0],points[0][1]);
+ for(let i=1;i<points.length;i++)ctx.lineTo(points[i][0],points[i][1]);
+ ctx.closePath();ctx.fillStyle=fill;ctx.fill();
+ if(stroke){ctx.strokeStyle=stroke;ctx.lineWidth=lw;ctx.stroke()}
+}
+function ellipse(x,y,rx,ry,fill,rot=0,alpha=1){
+ ctx.save();ctx.globalAlpha=alpha;ctx.translate(x,y);ctx.rotate(rot);
+ ctx.fillStyle=fill;ctx.beginPath();ctx.ellipse(0,0,rx,ry,0,0,Math.PI*2);ctx.fill();ctx.restore();
+}
+
+function sky(){
+ let g=ctx.createLinearGradient(0,0,0,H);
+ g.addColorStop(0,'#63b9d8');g.addColorStop(.43,'#b7ddd0');g.addColorStop(1,'#277062');
+ ctx.fillStyle=g;ctx.fillRect(0,0,W,H);
+
+ // slow cloud masses
+ ctx.globalAlpha=.22;ctx.fillStyle='#fff';
+ for(let i=0;i<8;i++){
+   let q=((i*290-world*.025)%(W+500))-160;
+   ellipse(q,65+(i%3)*42,115,24,'#fff',0,1);
+ }
+ ctx.globalAlpha=1;
+
+ // distant mountains
+ const layers=[
+  {base:.49,amp:66,speed:.035,fill:'#7aa89a'},
+  {base:.57,amp:58,speed:.065,fill:'#568878'},
+  {base:.65,amp:43,speed:.11,fill:'#356d5e'}
+ ];
+ layers.forEach((L,li)=>{
+   const off=-(world*L.speed)%180;
+   ctx.beginPath();ctx.moveTo(0,H);
+   for(let q=-220+off;q<W+220;q+=90){
+     let y=H*L.base-Math.sin((q+world*L.speed)/125+li)*L.amp-Math.sin(q/58)*12;
+     ctx.lineTo(q,y);
+   }
+   ctx.lineTo(W,H);ctx.closePath();ctx.fillStyle=L.fill;ctx.fill();
+ });
+
+ // distant waterfalls + drifting mist
+ for(let i=0;i<4;i++){
+   let q=((480+i*610-world*.12)%(W+760))-130;
+   let top=H*(.34+(i%2)*.05);
+   let gg=ctx.createLinearGradient(q,top,q+18,top);
+   gg.addColorStop(0,'rgba(220,248,245,.15)');
+   gg.addColorStop(.5,'rgba(250,255,255,.8)');
+   gg.addColorStop(1,'rgba(210,244,240,.12)');
+   ctx.fillStyle=gg;ctx.fillRect(q,top,18,H*.31);
+   ellipse(q+9,top+H*.31,55,12,'#e8f7f2',0,.25);
+ }
+ ctx.globalAlpha=.12;ctx.fillStyle='#fff';
+ for(let i=0;i<7;i++){
+   let q=((i*240-world*.09)%(W+420))-100;
+   ctx.beginPath();ctx.ellipse(q,H*.72+(i%2)*18,155,23,0,0,Math.PI*2);ctx.fill();
+ }
+ ctx.globalAlpha=1;
+}
+
+function encounterSpec(i){
+ const portrait=isPortrait();
+ // same world positions, intentionally different composition by orientation
+ const base=[760,1450,2180,2920,3690][i];
+ const gapY = portrait
+   ? H*([.43,.58,.38,.61,.48][i])
+   : H*([.46,.56,.42,.59,.48][i]);
+ const gap = portrait ? Math.max(168,H*.27) : Math.max(145,H*.34);
+ const width = portrait ? 260 : 360;
+ return {base,gapY,gap,width};
+}
+function terrain(){
+ for(let i=0;i<5;i++){
+   const s=encounterSpec(i), sx=s.base-world;
+   if(sx>W+420||sx<-s.width-120) continue;
+   const gy=s.gapY,g=s.gap,w=s.width;
+   const topEdge=gy-g/2, botEdge=gy+g/2;
+
+   // upper mass: physically attached to top of world
+   const upper=[
+    [sx,0],[sx+w,0],[sx+w,topEdge-42],
+    [sx+w*.88,topEdge-18],[sx+w*.74,topEdge-30],
+    [sx+w*.61,topEdge+3],[sx+w*.47,topEdge-13],
+    [sx+w*.31,topEdge+12],[sx+w*.14,topEdge-7],[sx,topEdge+20]
+   ];
+   poly(upper,'#5b4a36','#403a2d',2);
+
+   // lower mass: physically attached to bottom of world
+   const lower=[
+    [sx,botEdge-10],[sx+w*.13,botEdge+9],[sx+w*.28,botEdge-5],
+    [sx+w*.43,botEdge+16],[sx+w*.59,botEdge-8],
+    [sx+w*.73,botEdge+10],[sx+w*.87,botEdge-4],[sx+w,botEdge+18],
+    [sx+w,H],[sx,H]
+   ];
+   poly(lower,'#6a5439','#43392b',2);
+
+   // broad rock/masonry facets integrated into same mass
+   ctx.fillStyle='rgba(151,124,81,.55)';
+   for(let k=0;k<5;k++){
+     const yy=topEdge-55-k*38;
+     ctx.fillRect(sx+14+(k%2)*18,yy,w-38,7);
+   }
+   for(let k=0;k<5;k++){
+     const yy=botEdge+28+k*42;
+     ctx.fillRect(sx+18+(k%2)*14,yy,w-44,7);
+   }
+
+   // broken ruin blocks embedded at lip, never isolated
+   ctx.fillStyle='#806b49';
+   for(let k=0;k<4;k++){
+     const bw=28+(k%2)*10;
+     ctx.fillRect(sx+42+k*(w-90)/4,topEdge-12-(k%2)*10,bw,22+(k%2)*10);
+     ctx.fillRect(sx+26+k*(w-75)/4,botEdge-4,bw,20+(k%2)*9);
+   }
+
+   // vegetation follows terrain lips
+   for(let k=0;k<11;k++){
+     const q=sx+10+k*(w-20)/10;
+     ellipse(q,topEdge+3+(k%3)*4,22+(k%2)*5,9,'#235536',-.25,.96);
+     ellipse(q,botEdge-2-(k%2)*5,23+(k%3)*3,10,'#1d4c31',.22,.98);
+   }
+
+   // vines attached to upper terrain
+   ctx.strokeStyle='#285e37';ctx.lineWidth=4;
+   for(let k=0;k<3;k++){
+     let q=sx+w*(.22+k*.25);
+     ctx.beginPath();ctx.moveTo(q,topEdge-5);
+     ctx.bezierCurveTo(q-8,topEdge+28,q+17,topEdge+48,q+3,topEdge+75+(k%2)*22);
+     ctx.stroke();
+   }
+ }
+}
+
+
+function collisionCheck(){
+ const bx=heroX(), r=12;
+ for(let i=0;i<5;i++){
+   const s=encounterSpec(i), sx=s.base-world;
+   if(bx+r<sx || bx-r>sx+s.width) continue;
+   const local=clamp((bx-sx)/s.width,0,1);
+   // Conservative/inset collision contour matching the visible terrain lips.
+   const top=s.gapY-s.gap/2 + (Math.sin(local*9+i)*7);
+   const bot=s.gapY+s.gap/2 + (Math.sin(local*8+i*.7)*6);
+   if(bird.y-r < top || bird.y+r > bot) return true;
+ }
+ return false;
+}
+
+function drawFeathers(){
+ const bx=heroX();
+ for(let i=0;i<17;i++){
+   const id=i, wx=500+i*225, q=wx-world;
+   if(q<-30||q>W+30||featherTaken.has(id))continue;
+   // authored risk line bends around terrain
+   const y=H*(.48 + Math.sin(i*.83)*.13);
+   ctx.save();ctx.translate(q,y);ctx.rotate(-.45);
+   let gg=ctx.createLinearGradient(0,-13,0,14);gg.addColorStop(0,'#fff3a0');gg.addColorStop(.5,'#f7c742');gg.addColorStop(1,'#b9801d');
+   ctx.fillStyle=gg;ctx.beginPath();ctx.moveTo(0,-13);ctx.quadraticCurveTo(13,-3,3,15);ctx.quadraticCurveTo(-9,3,0,-13);ctx.fill();
+   ctx.strokeStyle='rgba(100,63,14,.6)';ctx.lineWidth=1;ctx.beginPath();ctx.moveTo(-1,-8);ctx.lineTo(2,11);ctx.stroke();ctx.restore();
+   if(Math.hypot(q-bx,y-bird.y)<28){featherTaken.add(id);feathers++}
+ }
+}
+
+function wing(front){
+ const t=1-bird.beat;
+ // placeholder production architecture: rear/body/front layers, one smooth beat
+ const down=Math.sin(clamp(t,0,1)*Math.PI);
+ const y=-8+down*20, rot=-.35+down*.68;
+ ctx.save();ctx.translate(-6,y+(front?0:-3));ctx.rotate(rot*(front?1:.72));
+ ctx.scale(front?1:.82,front?.88:.78);ctx.globalAlpha=front?1:.62;
+ let gr=ctx.createLinearGradient(0,8,0,-46);
+ gr.addColorStop(0,'#cf2928');gr.addColorStop(.33,'#e5a82a');gr.addColorStop(.62,'#286bb0');gr.addColorStop(1,'#17498d');
+ ctx.fillStyle=gr;ctx.beginPath();ctx.moveTo(-9,8);ctx.bezierCurveTo(-16,-4,-15,-30,-5,-48);ctx.bezierCurveTo(6,-44,16,-16,11,7);ctx.bezierCurveTo(6,13,-3,14,-9,8);ctx.fill();ctx.restore();
+}
+function drawBird(){
+ const bx=heroX(),pitch=clamp(bird.vy/650,-.27,.33);
+ ctx.save();ctx.translate(bx,bird.y);ctx.rotate(pitch);
+ wing(false);
+ // tail
+ poly([[-24,1],[-68,-4],[-29,9]],'#b61f26');
+ poly([[-26,7],[-72,17],[-30,12]],'#2468aa');
+ // canonical torso
+ let rg=ctx.createLinearGradient(-25,-12,31,12);rg.addColorStop(0,'#c91f27');rg.addColorStop(.58,'#e63729');rg.addColorStop(1,'#ef6230');
+ ctx.fillStyle=rg;ctx.beginPath();ctx.ellipse(0,2,31,17,0,0,Math.PI*2);ctx.fill();
+ // head/face
+ ctx.fillStyle='#e53a2b';ctx.beginPath();ctx.ellipse(24,-5,17,16,-.08,0,Math.PI*2);ctx.fill();
+ ctx.fillStyle='#f0e6d3';ctx.beginPath();ctx.ellipse(30,-6,10,9,-.05,0,Math.PI*2);ctx.fill();
+ ctx.fillStyle='#111';ctx.beginPath();ctx.arc(32,-9,2.2,0,Math.PI*2);ctx.fill();
+ ctx.beginPath();ctx.moveTo(39,-5);ctx.quadraticCurveTo(53,-1,42,8);ctx.quadraticCurveTo(48,1,39,-5);ctx.fill();
+ wing(true);
+ ctx.restore();
+}
+
+function foreground(){
+ // fast foliage only at edges, never blocks route for long
+ ctx.fillStyle='#153f2b';ctx.globalAlpha=.9;
+ for(let i=0;i<7;i++){
+   let q=((i*330-world*.82)%(W+500))-170;
+   ellipse(q,H+8,115,34,'#153f2b',-.25,1);
+ }
+ // occasional top leaves
+ for(let i=0;i<5;i++){
+   let q=((i*430-world*.7)%(W+650))-210;
+   ellipse(q,-7,90,22,'#17452e',.2,.7);
+ }
+ ctx.globalAlpha=1;
+}
+function hud(){
+ const pad=Math.max(14,parseFloat(getComputedStyle(document.documentElement).fontSize)||14);
+ ctx.save();
+ ctx.shadowColor='rgba(0,0,0,.45)';ctx.shadowBlur=5;
+ ctx.fillStyle='rgba(255,255,255,.95)';
+ ctx.font='600 10px system-ui';ctx.fillText('FEATHERS',18,24);
+ ctx.font='700 22px Georgia';ctx.fillText(String(feathers),18,47);
+
+ ctx.textAlign='right';ctx.font='700 23px Georgia';ctx.fillText(Math.floor(world/6)+' m',W-18,31);
+ ctx.font='600 9px system-ui';ctx.fillText('FLIGHT 1–1',W-18,47);
+
+ const left=W*(isPortrait()?.29:.34), right=W*(isPortrait()?.78:.70), y=23;
+ ctx.shadowBlur=0;ctx.fillStyle='rgba(255,255,255,.35)';ctx.fillRect(left,y,right-left,3);
+ ctx.fillStyle='#e0b84e';ctx.fillRect(left,y,(right-left)*Math.min(1,world/4300),3);
+ ctx.fillStyle='#fff4bf';ctx.beginPath();ctx.arc(left+(right-left)*Math.min(1,world/4300),y+1.5,4,0,Math.PI*2);ctx.fill();
+ ctx.textAlign='center';ctx.fillStyle='rgba(255,255,255,.88)';ctx.font='600 8px system-ui';ctx.fillText('CANOPY RUN',W/2,40);
+ ctx.restore();
+}
+function overlay(){
+ if(!started && !dead && !complete){
+  ctx.fillStyle='rgba(5,18,15,.20)';ctx.fillRect(0,0,W,H);
+  ctx.fillStyle='white';ctx.textAlign='center';ctx.shadowColor='rgba(0,0,0,.45)';ctx.shadowBlur=8;
+  ctx.font='700 34px Georgia';ctx.fillText('MACAWBRE',W/2,H*.39);
+  ctx.font='600 14px system-ui';ctx.fillText('CANOPY RUN  •  FLIGHT 1–1',W/2,H*.39+29);
+  ctx.font='500 15px system-ui';ctx.fillText('tap to flap',W/2,H*.58);ctx.shadowBlur=0;ctx.textAlign='left';return;
+ }
+ if(!dead && !complete)return;
+ ctx.fillStyle='rgba(5,18,15,.34)';ctx.fillRect(0,0,W,H);
+ ctx.fillStyle='white';ctx.textAlign='center';
+ ctx.font='700 25px Georgia';
+ ctx.fillText(complete?'FLIGHT COMPLETE':'FLIGHT ENDED',W/2,H*.46);
+ ctx.font='500 13px system-ui';
+ if(complete){
+   ctx.fillText(Math.floor(world/6)+' m  •  '+feathers+' feathers',W/2,H*.46+27);
+   ctx.fillText('tap to fly again',W/2,H*.46+50);
+ }else ctx.fillText('tap to restart',W/2,H*.46+27);
+ ctx.textAlign='left';
+}
+function tick(ts){
+ const dt=last?Math.min(.032,(ts-last)/1000):0;last=ts;
+ if(started && !dead && !complete){
+   runTime+=dt;world+=P.speed*dt;
+   bird.vy=Math.min(P.maxFall,bird.vy+P.gravity*dt);bird.y+=bird.vy*dt;
+   bird.beat=Math.max(0,bird.beat-dt*2.45);
+   if(bird.y<35){bird.y=35;bird.vy=15}
+   if(bird.y>H-26 || collisionCheck()){dead=true}
+   // ~30 second vertical-slice endpoint.
+   if(world>=4300){victory=1}
+ }
+ if(started && victory>0 && !complete){
+   victory+=dt;
+   // short hands-off victory flight before result screen
+   bird.vy += (H*.43-bird.y)*dt*2.0;
+   bird.vy*=.96;
+   bird.y+=bird.vy*dt;
+   bird.beat=Math.max(bird.beat,.55);
+   world+=P.speed*.55*dt;
+   if(victory>1.65){complete=true;victory=0}
+ }
+ ctx.clearRect(0,0,W,H);
+ sky();terrain();drawFeathers();drawBird();foreground();hud();overlay();
+ requestAnimationFrame(tick);
+}
+requestAnimationFrame(tick);
+})();
+</script>
+</body></html>
